@@ -40,6 +40,7 @@
 
 (defn make-new-connection "Actually creates and returns a new socket connection."
   [{:keys [host port password timeout-ms db] :as spec}]
+  (println "new connection")
   (let [socket (doto (Socket. ^String host ^Integer port)
                  (.setTcpNoDelay true)
                  (.setKeepAlive true)
