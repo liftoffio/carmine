@@ -29,19 +29,30 @@
   to skip connection pooling. For other pool options, Ref. http://goo.gl/EiTbn."
   {:arglists '([conn :as-pipeline & body] [conn & body])}
   [conn & sigs]
-  `(let [{pool-opts# :pool spec-opts# :spec} ~conn
+  `(try
+     #_(conns/syncprn "gc-from-wcar")
+     (let [{pool-opts# :pool spec-opts# :spec} ~conn
          [pool# conn#] (conns/pooled-conn pool-opts# spec-opts#)]
      (try
        (let [response# (protocol/with-context conn# ~@sigs)]
          (conns/release-conn pool# conn#)
          response#)
-       (catch Exception e# (conns/release-conn pool# conn# e#) (throw e#)))))
+       (catch Exception e# (conns/release-conn pool# conn# e#) (throw e#))))
+
+     (finally
+       #_(conns/syncprn "finally?"))))
+
 
 (comment (wcar {} (ping) "not-a-Redis-command" (ping))
          (with-open [p (conns/conn-pool {})]
            (wcar {:pool p} (ping) (ping)))
          (wcar {} (ping))
          (wcar {} :as-pipeline (ping)))
+
+(defn da-pool
+  [conn]
+  (let [{pool-opts :pool spec-opts :spec} conn]
+    (conns/conn-pool pool-opts true)))
 
 ;;;; Misc
 

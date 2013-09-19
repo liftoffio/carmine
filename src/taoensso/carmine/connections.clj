@@ -17,6 +17,13 @@
   (conn-alive? [this])
   (close-conn  [this]))
 
+(def foo (Object.))
+
+(defn syncprn
+  [& args]
+  (locking foo
+    (apply prn args)))
+
 (defrecord Connection [^Socket socket spec in-stream out-stream]
   IConnection
   (conn-alive? [this]
@@ -30,17 +37,26 @@
   (get-conn     [this spec])
   (release-conn [this conn] [this conn exception]))
 
+(def global-pool (atom nil))
+
 (defrecord ConnectionPool [^GenericKeyedObjectPool pool]
   IConnectionPool
-  (get-conn     [_ spec] (.borrowObject pool spec))
-  (release-conn [_ conn] (.returnObject pool (:spec conn) conn))
+  (get-conn     [_ spec] (do
+                           ;(syncprn "get-conn")
+                           (locking global-pool
+                             (if (nil? @global-pool)
+                               (swap! global-pool (fn [_] spec))
+                               (if-not (= @global-pool spec)
+                                 (do (prn "boooooooooom") (System/exit 0)))))
+                           (.borrowObject pool spec)))
+  (release-conn [_ conn] (do #_(syncprn "release-conn") (.returnObject pool (:spec conn) conn)))
   (release-conn [_ conn exception] (.invalidateObject pool (:spec conn) conn))
   java.io.Closeable
   (close [_] (.close pool)))
 
 (defn make-new-connection "Actually creates and returns a new socket connection."
   [{:keys [host port password timeout-ms db] :as spec}]
-  (println "new connection")
+  #_(syncprn "new connection")
   (let [socket (doto (Socket. ^String host ^Integer port)
                  (.setTcpNoDelay true)
                  (.setKeepAlive true)
@@ -66,11 +82,11 @@
 
 (defn make-connection-factory []
   (reify KeyedPoolableObjectFactory
-    (makeObject      [_ spec] (make-new-connection spec))
+    (makeObject      [_ spec] (do #_(syncprn "makeObject") (make-new-connection spec)))
     (activateObject  [_ spec conn])
     (validateObject  [_ spec conn] (conn-alive? conn))
     (passivateObject [_ spec conn])
-    (destroyObject   [_ spec conn] (close-conn conn))))
+    (destroyObject   [_ spec conn] (do #_(syncprn "destroyObject") (close-conn conn)))))
 
 (defn set-pool-option [^GenericKeyedObjectPool pool [opt v]]
   (case opt
@@ -90,25 +106,40 @@
     (throw (Exception. (str "Unknown pool option: " opt))))
   pool)
 
-(def ^:private pool-cache (atom {}))
+(def pool-cache (atom {}))
+
+(def global-dp (atom nil))
 
 (defn conn-pool ^java.io.Closeable [opts & [cached?]]
   (if (satisfies? IConnectionPool opts)
     opts ; Pass through pre-made pools
-    (if-let [dp (and cached? (@pool-cache opts))]
-      @dp
-      (let [dp (delay
-                (if (= opts :none) (->NonPooledConnectionPool)
-                    (let [defaults {:test-while-idle?              true
-                                    :num-tests-per-eviction-run    -1
-                                    :min-evictable-idle-time-ms    60000
-                                    :time-between-eviction-runs-ms 30000}]
-                      (->ConnectionPool
-                       (reduce set-pool-option
-                               (GenericKeyedObjectPool. (make-connection-factory))
-                               (merge defaults opts))))))]
-        (swap! pool-cache assoc opts dp)
-        @dp))))
+    (locking pool-cache
+      (if-let [dp (and cached? (@pool-cache opts))]
+        (let [blah @dp]
+          (locking global-dp
+            (if (nil? @global-dp)
+              (swap! global-dp (fn [_] blah))
+              (if-not (= @global-dp blah)
+                (do (prn "boooooooooom2") (System/exit 0)))))
+          blah)
+        (let [dp (delay
+                   (if (= opts :none) (->NonPooledConnectionPool)
+                     (let [defaults {:test-while-idle?              true
+                                     :num-tests-per-eviction-run    -1
+                                     :min-evictable-idle-time-ms    60000
+                                     :time-between-eviction-runs-ms 30000}]
+                       (->ConnectionPool
+                         (reduce set-pool-option
+                                 (GenericKeyedObjectPool. (make-connection-factory))
+                                 (merge defaults opts))))))]
+          (swap! pool-cache assoc opts dp)
+          (let [blah @dp]
+            (locking global-dp
+              (if (nil? @global-dp)
+                (swap! global-dp (fn [_] blah))
+                (if-not (= @global-dp blah)
+                  (do (prn "boooooooooom3") (System/exit 0)))))
+            blah))))))
 
 (comment (conn-pool :none) (conn-pool {}))
 
